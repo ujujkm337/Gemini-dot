@@ -7,30 +7,23 @@ from google import genai
 from google.genai.errors import APIError
 from flask import Flask 
 
-# 1. Считывание переменных окружения
-# ВАШИ КЛЮЧИ БУДУТ СЧИТАНЫ ИЗ НАСТРОЕК RENDER
+# КЛЮЧИ БУДУТ СЧИТАНЫ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ RENDER!
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
+GEMINI_MODEL = 'gemini-2.5-flash'
 
-# Инициализация Gemini клиента
-try:
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY не установлен.")
-    
-    GEMINI_MODEL = 'gemini-2.5-flash'
-    client = genai.Client(api_key=GEMINI_API_KEY)
-except ValueError as e:
-    print(f"Ошибка инициализации Gemini: {e}")
-    client = None
-except Exception as e:
-    print(f"Непредвиденная ошибка инициализации Gemini: {e}")
-    client = None
+# --- Инициализация API ---
+client = None
+if GEMINI_API_KEY:
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        print(f"Ошибка инициализации Gemini: {e}")
 
-# Инициализация Telegram Бота и Диспетчера
+# --- Инициализация Telegram Бота ---
 if not BOT_TOKEN:
-    print("TG_BOT_TOKEN не установлен.")
-    exit()
-
+    print("TG_BOT_TOKEN не установлен. Бот не будет работать.")
+    
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
@@ -44,11 +37,10 @@ async def send_welcome(message: types.Message):
     )
     await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
-
 @dp.message_handler()
 async def handle_message(message: types.Message):
     if not client:
-        await message.answer("❌ Бот не запущен. Не удалось инициализировать Gemini Client.")
+        await message.answer("❌ Бот временно не работает: не удалось подключиться к Gemini API.")
         return
 
     thinking_message = await message.answer("🧠 Думаю... Пожалуйста, подождите.")
@@ -58,7 +50,6 @@ async def handle_message(message: types.Message):
             model=GEMINI_MODEL,
             contents=message.text
         )
-
         await bot.edit_message_text(
             chat_id=message.chat.id,
             message_id=thinking_message.message_id,
@@ -66,21 +57,13 @@ async def handle_message(message: types.Message):
             parse_mode=ParseMode.MARKDOWN
         )
 
-    except APIError as e:
-        error_text = f"❌ Ошибка API Gemini: {e}"
-        await bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=thinking_message.message_id,
-            text=error_text
-        )
     except Exception as e:
-        error_text = f"❌ Непредвиденная ошибка: {e}"
+        error_text = f"❌ Произошла ошибка: {e}"
         await bot.edit_message_text(
             chat_id=message.chat.id,
             message_id=thinking_message.message_id,
             text=error_text
         )
-
 
 ### ФУНКЦИЯ KEEP-ALIVE (Flask) ###
 
@@ -95,19 +78,21 @@ def run_flask_server():
     print(f"Starting Flask Keep-Alive server on port {port}...")
     web_app.run(host='0.0.0.0', port=port, debug=False)
 
-
 ### Запуск Бота ###
 
 async def main():
-    # 1. Запуск Flask в отдельном потоке
-    flask_thread = threading.Thread(target=run_flask_server)
-    flask_thread.daemon = True 
-    flask_thread.start()
-    
-    # 2. Запуск Polling
-    print("Бот polling запущен. Ожидание входящих сообщений...")
-    await dp.skip_updates() 
-    await dp.start_polling()
+    if BOT_TOKEN:
+        # 1. Запуск Flask в отдельном потоке
+        flask_thread = threading.Thread(target=run_flask_server)
+        flask_thread.daemon = True 
+        flask_thread.start()
+        
+        # 2. Запуск Polling
+        print("Бот polling запущен. Ожидание входящих сообщений...")
+        await dp.skip_updates() 
+        await dp.start_polling()
+    else:
+        print("Бот не может запуститься, так как нет TG_BOT_TOKEN.")
 
 if __name__ == '__main__':
     try:
