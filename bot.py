@@ -1,124 +1,69 @@
 import os
-import logging
-import asyncio
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import Message
+from threading import Thread
+from flask import Flask
 import google.generativeai as genai
-from dotenv import load_dotenv
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Загрузка переменных окружения
-load_dotenv()
+# --- КОНФИГУРАЦИЯ (ТВОИ ДАННЫЕ) ---
+GEMINI_KEY = "AIzaSyAnmIxt6lrfNsoUKa2YKaX-_9G7QASD9wM"
+TG_TOKEN = "7623168300:AAHYt7EAB2w4KaLW38HD1Tk-_MjyWTIiciM"
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Настройка Gemini
+genai.configure(api_key=GEMINI_KEY)
+# Используем быструю и бесплатную модель
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-# Конфигурация API ключей
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyAnmIxt6lrfNsoUKa2YKaX-_9G7QASD9wM')
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '7623168300:AAHYt7EAB2w4KaLW38HD1Tk-_MjyWTIiciM')
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER (KEEP-ALIVE) ---
+# Render требует, чтобы приложение слушало порт, иначе он его убьет.
+app = Flask('')
 
-# Инициализация бота и диспетчера
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
-dp = Dispatcher()
+@app.route('/')
+def home():
+    return "Бот работает! (Gemini + Telegram)"
 
-# Инициализация Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
+def run_http():
+    # Render выдает порт через переменную окружения, или используем 8080
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
-# Ограничение одновременных запросов
-MAX_CONCURRENT_REQUESTS = 3
-current_requests = 0
-request_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+def keep_alive():
+    t = Thread(target=run_http)
+    t.start()
 
-async def process_with_gemini(text: str) -> str:
-    """Обработка запроса через Gemini AI с ограничением одновременных запросов"""
-    async with request_semaphore:
-        try:
-            response = await asyncio.to_thread(model.generate_content, text)
-            return response.text
-        except Exception as e:
-            logger.error(f"Ошибка Gemini: {e}")
-            return "❌ Извините, произошла ошибка при обработке запроса. Попробуйте позже."
+# --- ЛОГИКА БОТА ---
 
-# Обработчики команд
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    """Обработчик команды /start"""
-    welcome_text = """
-🤖 Привет! Я бот с интеграцией Gemini AI.
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Я бот на базе Gemini. Напиши мне что-нибудь.")
 
-Отправьте мне любой текст или вопрос, и я постараюсь помочь!
-
-Примеры запросов:
-• "Напиши план для изучения Python"
-• "Объясни квантовую физику простыми словами" 
-• "Помоги с идеей для проекта"
-
-Команды:
-/start - начать работу
-/help - справка
-/about - информация о боте
-    """
-    await message.answer(welcome_text)
-
-@dp.message(Command("help"))
-async def cmd_help(message: Message):
-    """Обработчик команды /help"""
-    help_text = """
-📖 Доступные команды:
-/start - начать работу
-/help - показать эту справку
-/about - информация о боте
-
-Просто отправьте мне сообщение, и я обработаю его с помощью Gemini AI!
-    """
-    await message.answer(help_text)
-
-@dp.message(Command("about"))
-async def cmd_about(message: Message):
-    """Обработчик команды /about"""
-    about_text = """
-ℹ️ О боте:
-Этот бот использует Gemini AI от Google для обработки запросов.
-
-Особенности:
-• Бесплатная версия Gemini
-• Поддержка текстовых запросов
-• Ограничение одновременных запросов
-• Работает на Render.com
-    """
-    await message.answer(about_text)
-
-@dp.message(F.text)
-async def handle_message(message: Message):
-    """Обработчик текстовых сообщений"""
-    user_message = message.text
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
     
-    # Показываем, что бот печатает
-    await message.answer_chat_action("typing")
-    
+    # Показываем статус "печатает...", пока ИИ думает
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+
     try:
-        # Обрабатываем запрос через Gemini
-        response = await process_with_gemini(user_message)
-        
-        # Разбиваем длинные сообщения (Telegram ограничение 4096 символов)
-        if len(response) > 4000:
-            chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
-            for chunk in chunks:
-                await message.answer(chunk)
-                await asyncio.sleep(0.1)
-        else:
-            await message.answer(response)
-            
+        # Отправляем запрос в Gemini
+        response = model.generate_content(user_text)
+        # Отправляем ответ пользователю
+        await update.message.reply_text(response.text, parse_mode='Markdown')
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await message.answer("❌ Произошла ошибка при обработке запроса. Попробуйте еще раз.")
+        await update.message.reply_text(f"Ошибка: {e}")
 
-async def main():
-    """Основная функция запуска бота"""
-    logger.info("Бот запускается...")
-    await dp.start_polling(bot)
+def main():
+    # 1. Запускаем фиктивный веб-сервер в фоне
+    keep_alive()
+    
+    # 2. Запускаем бота
+    application = Application.builder().token(TG_TOKEN).build()
+
+    # Хендлеры
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+
+    # Запуск (polling)
+    print("Бот запущен...")
+    application.run_polling()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
