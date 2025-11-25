@@ -2,12 +2,12 @@ import os
 import asyncio
 import threading
 from aiogram import Bot, Dispatcher, types
-# !!! ПРОБЛЕМНАЯ СТРОКА УДАЛЕНА !!!
 from google import genai
 from google.genai.errors import APIError
 from flask import Flask 
 
 # КЛЮЧИ БУДУТ СЧИТАНЫ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ RENDER!
+# Вы должны заполнить GEMINI_API_KEY и TG_BOT_TOKEN в Env Vars на Render.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 GEMINI_MODEL = 'gemini-2.5-flash'
@@ -25,17 +25,19 @@ if not BOT_TOKEN:
     print("TG_BOT_TOKEN не установлен. Бот не будет работать.")
     
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+# ИСПРАВЛЕНИЕ v3: Диспетчер инициализируется без аргумента bot
+dp = Dispatcher() 
 
 ### Обработчики сообщений ###
 
+# NOTE: В aiogram v3 это работает через DP, но обычно используется Router
 @dp.message_handler(commands=['start', 'help'])
 async def send_welcome(message: types.Message):
     welcome_text = (
         "👋 Привет! Я бот на базе **Gemini 2.5 Flash**.\n"
         "Просто отправь мне свой вопрос, и я постараюсь на него ответить."
     )
-    # ИСПРАВЛЕНО: используем строку 'Markdown' вместо ParseMode.MARKDOWN
+    # ИСПРАВЛЕНИЕ v3: Используем строковое значение для parse_mode
     await message.answer(welcome_text, parse_mode='Markdown')
 
 @dp.message_handler()
@@ -55,7 +57,7 @@ async def handle_message(message: types.Message):
             chat_id=message.chat.id,
             message_id=thinking_message.message_id,
             text=response.text,
-            # ИСПРАВЛЕНО: используем строку 'Markdown' вместо ParseMode.MARKDOWN
+            # ИСПРАВЛЕНИЕ v3: Используем строковое значение для parse_mode
             parse_mode='Markdown' 
         )
 
@@ -76,6 +78,7 @@ def home():
     return "Telegram Bot is Running!", 200
 
 def run_flask_server():
+    # Render передает необходимый порт через переменную окружения PORT
     port = int(os.environ.get('PORT', 5000)) 
     print(f"Starting Flask Keep-Alive server on port {port}...")
     web_app.run(host='0.0.0.0', port=port, debug=False)
@@ -84,7 +87,7 @@ def run_flask_server():
 
 async def main():
     if BOT_TOKEN:
-        # 1. Запуск Flask в отдельном потоке
+        # 1. Запуск Flask в отдельном потоке для Keep-Alive
         flask_thread = threading.Thread(target=run_flask_server)
         flask_thread.daemon = True 
         flask_thread.start()
@@ -92,7 +95,8 @@ async def main():
         # 2. Запуск Polling
         print("Бот polling запущен. Ожидание входящих сообщений...")
         await dp.skip_updates() 
-        await dp.start_polling()
+        # ИСПРАВЛЕНИЕ v3: start_polling теперь принимает объект bot
+        await dp.start_polling(bot) 
     else:
         print("Бот не может запуститься, так как нет TG_BOT_TOKEN.")
 
