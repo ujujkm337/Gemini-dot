@@ -1,112 +1,142 @@
 import os
+import logging
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения
+load_dotenv()
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Конфигурация API ключей из переменных окружения
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyAnmIxt6lrfNsoUKa2YKaX-_9G7QASD9wM')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '7623168300:AAHYt7EAB2w4KaLW38HD1Tk-_MjyWTIiciM')
+
+# Инициализация Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-pro')
+
+# Очередь запросов для избежания перегрузки
 import asyncio
-import threading
-# НОВОЕ: Импортируем Router
-from aiogram import Bot, Dispatcher, types, Router 
-from google import genai
-from google.genai.errors import APIError
-from flask import Flask 
+from collections import deque
 
-# ... (Инициализация ключей и клиента Gemini остается прежней) ...
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
-GEMINI_MODEL = 'gemini-2.5-flash'
+request_queue = deque()
+MAX_CONCURRENT_REQUESTS = 3
+current_requests = 0
 
-client = None
-if GEMINI_API_KEY:
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        print(f"Ошибка инициализации Gemini: {e}")
-
-if not BOT_TOKEN:
-    print("TG_BOT_TOKEN не установлен. Бот не будет работать.")
+async def process_with_gemini(text: str) -> str:
+    """Обработка запроса через Gemini AI с ограничением одновременных запросов"""
+    global current_requests
     
-bot = Bot(token=BOT_TOKEN)
-# Инициализация Dispatcher (без аргумента bot)
-dp = Dispatcher() 
-
-# НОВОЕ: Создаем Router для обработки сообщений
-router = Router()
-
-# НОВОЕ: Подключаем Router к Dispatcher
-dp.include_router(router)
-
-
-### Обработчики сообщений (Теперь используют router.message) ###
-
-# ИСПРАВЛЕНИЕ: Используем @router.message
-@router.message(commands=['start', 'help'])
-async def send_welcome(message: types.Message):
-    welcome_text = (
-        "👋 Привет! Я бот на базе **Gemini 2.5 Flash**.\n"
-        "Просто отправь мне свой вопрос, и я постараюсь на него ответить."
-    )
-    await message.answer(welcome_text, parse_mode='Markdown')
-
-# ИСПРАВЛЕНИЕ: Используем @router.message
-@router.message()
-async def handle_message(message: types.Message):
-    if not client:
-        await message.answer("❌ Бот временно не работает: не удалось подключиться к Gemini API.")
-        return
-
-    thinking_message = await message.answer("🧠 Думаю... Пожалуйста, подождите.")
-
+    # Ждем, если слишком много одновременных запросов
+    while current_requests >= MAX_CONCURRENT_REQUESTS:
+        await asyncio.sleep(0.1)
+    
+    current_requests += 1
     try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=message.text
-        )
-        await bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=thinking_message.message_id,
-            text=response.text,
-            parse_mode='Markdown' 
-        )
-
+        response = model.generate_content(text)
+        return response.text
     except Exception as e:
-        error_text = f"❌ Произошла ошибка: {e}"
-        await bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=thinking_message.message_id,
-            text=error_text
-        )
+        logger.error(f"Ошибка Gemini: {e}")
+        return "Извините, произошла ошибка при обработке запроса. Попробуйте позже."
+    finally:
+        current_requests -= 1
 
-# ... (Остальная часть кода Keep-Alive и main() остается прежней) ...
+# Команды бота
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start"""
+    welcome_text = """
+🤖 Привет! Я бот с интеграцией Gemini AI.
 
-### ФУНКЦИЯ KEEP-ALIVE (Flask) ###
+Отправьте мне любой текст или вопрос, и я постараюсь помочь!
 
-web_app = Flask(__name__)
+Примеры запросов:
+• "Напиши план для изучения Python"
+• "Объясни квантовую физику простыми словами"
+• "Помоги с идеей для проекта"
+    """
+    await update.message.reply_text(welcome_text)
 
-@web_app.route('/')
-def home():
-    return "Telegram Bot is Running!", 200
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /help"""
+    help_text = """
+📖 Доступные команды:
+/start - начать работу
+/help - показать эту справку
+/about - информация о боте
 
-def run_flask_server():
-    port = int(os.environ.get('PORT', 5000)) 
-    print(f"Starting Flask Keep-Alive server on port {port}...")
-    web_app.run(host='0.0.0.0', port=port, debug=False)
+Просто отправьте мне сообщение, и я обработаю его с помощью Gemini AI!
+    """
+    await update.message.reply_text(help_text)
 
-### Запуск Бота ###
+async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /about"""
+    about_text = """
+ℹ️ О боте:
+Этот бот использует Gemini AI от Google для обработки запросов.
 
-async def main():
-    if BOT_TOKEN:
-        # 1. Запуск Flask в отдельном потоке для Keep-Alive
-        flask_thread = threading.Thread(target=run_flask_server)
-        flask_thread.daemon = True 
-        flask_thread.start()
+Особенности:
+• Бесплатная версия Gemini
+• Поддержка текстовых запросов
+• Ограничение одновременных запросов
+• Работает на Render.com
+    """
+    await update.message.reply_text(about_text)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений"""
+    user_message = update.message.text
+    
+    # Показываем, что бот печатает
+    await update.message.chat.send_action(action="typing")
+    
+    try:
+        # Обрабатываем запрос через Gemini
+        response = await process_with_gemini(user_message)
         
-        # 2. Запуск Polling
-        print("Бот polling запущен. Ожидание входящих сообщений...")
-        await dp.skip_updates() 
-        # start_polling теперь принимает объект bot
-        await dp.start_polling(bot) 
-    else:
-        print("Бот не может запуститься, так как нет TG_BOT_TOKEN.")
+        # Разбиваем длинные сообщения (Telegram ограничение 4096 символов)
+        if len(response) > 4000:
+            chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+            for chunk in chunks:
+                await update.message.reply_text(chunk)
+                await asyncio.sleep(0.1)
+        else:
+            await update.message.reply_text(response)
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при обработке запроса. Попробуйте еще раз.")
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок"""
+    logger.error(f"Ошибка: {context.error}")
+    if update and update.message:
+        await update.message.reply_text("❌ Произошла непредвиденная ошибка.")
+
+def main():
+    """Основная функция запуска бота"""
+    # Создаем приложение
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("about", about))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Обработчик ошибок
+    application.add_error_handler(error_handler)
+    
+    # Запускаем бота
+    print("Бот запущен...")
+    application.run_polling()
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("Бот остановлен.")
+    main()
