@@ -2,7 +2,7 @@ import os
 import asyncio
 import threading
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ParseMode
+# !!! ПРОБЛЕМНАЯ СТРОКА УДАЛЕНА !!!
 from google import genai
 from google.genai.errors import APIError
 from flask import Flask 
@@ -35,7 +35,8 @@ async def send_welcome(message: types.Message):
         "👋 Привет! Я бот на базе **Gemini 2.5 Flash**.\n"
         "Просто отправь мне свой вопрос, и я постараюсь на него ответить."
     )
-    await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN)
+    # ИСПРАВЛЕНО: используем строку 'Markdown' вместо ParseMode.MARKDOWN
+    await message.answer(welcome_text, parse_mode='Markdown')
 
 @dp.message_handler()
 async def handle_message(message: types.Message):
@@ -54,7 +55,8 @@ async def handle_message(message: types.Message):
             chat_id=message.chat.id,
             message_id=thinking_message.message_id,
             text=response.text,
-            parse_mode=ParseMode.MARKDOWN
+            # ИСПРАВЛЕНО: используем строку 'Markdown' вместо ParseMode.MARKDOWN
+            parse_mode='Markdown' 
         )
 
     except Exception as e:
