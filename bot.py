@@ -1,0 +1,116 @@
+import os
+import asyncio
+import threading
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ParseMode
+from google import genai
+from google.genai.errors import APIError
+from flask import Flask 
+
+# 1. Считывание переменных окружения
+# ВАШИ КЛЮЧИ БУДУТ СЧИТАНЫ ИЗ НАСТРОЕК RENDER
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
+
+# Инициализация Gemini клиента
+try:
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY не установлен.")
+    
+    GEMINI_MODEL = 'gemini-2.5-flash'
+    client = genai.Client(api_key=GEMINI_API_KEY)
+except ValueError as e:
+    print(f"Ошибка инициализации Gemini: {e}")
+    client = None
+except Exception as e:
+    print(f"Непредвиденная ошибка инициализации Gemini: {e}")
+    client = None
+
+# Инициализация Telegram Бота и Диспетчера
+if not BOT_TOKEN:
+    print("TG_BOT_TOKEN не установлен.")
+    exit()
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot)
+
+### Обработчики сообщений ###
+
+@dp.message_handler(commands=['start', 'help'])
+async def send_welcome(message: types.Message):
+    welcome_text = (
+        "👋 Привет! Я бот на базе **Gemini 2.5 Flash**.\n"
+        "Просто отправь мне свой вопрос, и я постараюсь на него ответить."
+    )
+    await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN)
+
+
+@dp.message_handler()
+async def handle_message(message: types.Message):
+    if not client:
+        await message.answer("❌ Бот не запущен. Не удалось инициализировать Gemini Client.")
+        return
+
+    thinking_message = await message.answer("🧠 Думаю... Пожалуйста, подождите.")
+
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=message.text
+        )
+
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=thinking_message.message_id,
+            text=response.text,
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    except APIError as e:
+        error_text = f"❌ Ошибка API Gemini: {e}"
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=thinking_message.message_id,
+            text=error_text
+        )
+    except Exception as e:
+        error_text = f"❌ Непредвиденная ошибка: {e}"
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=thinking_message.message_id,
+            text=error_text
+        )
+
+
+### ФУНКЦИЯ KEEP-ALIVE (Flask) ###
+
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Telegram Bot is Running!", 200
+
+def run_flask_server():
+    port = int(os.environ.get('PORT', 5000)) 
+    print(f"Starting Flask Keep-Alive server on port {port}...")
+    web_app.run(host='0.0.0.0', port=port, debug=False)
+
+
+### Запуск Бота ###
+
+async def main():
+    # 1. Запуск Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask_server)
+    flask_thread.daemon = True 
+    flask_thread.start()
+    
+    # 2. Запуск Polling
+    print("Бот polling запущен. Ожидание входящих сообщений...")
+    await dp.skip_updates() 
+    await dp.start_polling()
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Бот остановлен.")
