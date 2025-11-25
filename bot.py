@@ -1,7 +1,9 @@
 import os
 import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import asyncio
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import Message
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -9,48 +11,39 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Конфигурация API ключей из переменных окружения
+# Конфигурация API ключей
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyAnmIxt6lrfNsoUKa2YKaX-_9G7QASD9wM')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '7623168300:AAHYt7EAB2w4KaLW38HD1Tk-_MjyWTIiciM')
+
+# Инициализация бота и диспетчера
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
+dp = Dispatcher()
 
 # Инициализация Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-pro')
 
-# Очередь запросов для избежания перегрузки
-import asyncio
-from collections import deque
-
-request_queue = deque()
+# Ограничение одновременных запросов
 MAX_CONCURRENT_REQUESTS = 3
 current_requests = 0
+request_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
 async def process_with_gemini(text: str) -> str:
     """Обработка запроса через Gemini AI с ограничением одновременных запросов"""
-    global current_requests
-    
-    # Ждем, если слишком много одновременных запросов
-    while current_requests >= MAX_CONCURRENT_REQUESTS:
-        await asyncio.sleep(0.1)
-    
-    current_requests += 1
-    try:
-        response = model.generate_content(text)
-        return response.text
-    except Exception as e:
-        logger.error(f"Ошибка Gemini: {e}")
-        return "Извините, произошла ошибка при обработке запроса. Попробуйте позже."
-    finally:
-        current_requests -= 1
+    async with request_semaphore:
+        try:
+            response = await asyncio.to_thread(model.generate_content, text)
+            return response.text
+        except Exception as e:
+            logger.error(f"Ошибка Gemini: {e}")
+            return "❌ Извините, произошла ошибка при обработке запроса. Попробуйте позже."
 
-# Команды бота
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Обработчики команд
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
     """Обработчик команды /start"""
     welcome_text = """
 🤖 Привет! Я бот с интеграцией Gemini AI.
@@ -59,12 +52,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Примеры запросов:
 • "Напиши план для изучения Python"
-• "Объясни квантовую физику простыми словами"
+• "Объясни квантовую физику простыми словами" 
 • "Помоги с идеей для проекта"
-    """
-    await update.message.reply_text(welcome_text)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+Команды:
+/start - начать работу
+/help - справка
+/about - информация о боте
+    """
+    await message.answer(welcome_text)
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
     """Обработчик команды /help"""
     help_text = """
 📖 Доступные команды:
@@ -74,9 +73,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Просто отправьте мне сообщение, и я обработаю его с помощью Gemini AI!
     """
-    await update.message.reply_text(help_text)
+    await message.answer(help_text)
 
-async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(Command("about"))
+async def cmd_about(message: Message):
     """Обработчик команды /about"""
     about_text = """
 ℹ️ О боте:
@@ -88,14 +88,15 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Ограничение одновременных запросов
 • Работает на Render.com
     """
-    await update.message.reply_text(about_text)
+    await message.answer(about_text)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(F.text)
+async def handle_message(message: Message):
     """Обработчик текстовых сообщений"""
-    user_message = update.message.text
+    user_message = message.text
     
     # Показываем, что бот печатает
-    await update.message.chat.send_action(action="typing")
+    await message.answer_chat_action("typing")
     
     try:
         # Обрабатываем запрос через Gemini
@@ -105,38 +106,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(response) > 4000:
             chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
             for chunk in chunks:
-                await update.message.reply_text(chunk)
+                await message.answer(chunk)
                 await asyncio.sleep(0.1)
         else:
-            await update.message.reply_text(response)
+            await message.answer(response)
             
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при обработке запроса. Попробуйте еще раз.")
+        await message.answer("❌ Произошла ошибка при обработке запроса. Попробуйте еще раз.")
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок"""
-    logger.error(f"Ошибка: {context.error}")
-    if update and update.message:
-        await update.message.reply_text("❌ Произошла непредвиденная ошибка.")
-
-def main():
+async def main():
     """Основная функция запуска бота"""
-    # Создаем приложение
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Добавляем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("about", about))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Обработчик ошибок
-    application.add_error_handler(error_handler)
-    
-    # Запускаем бота
-    print("Бот запущен...")
-    application.run_polling()
+    logger.info("Бот запускается...")
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
